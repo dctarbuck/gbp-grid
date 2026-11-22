@@ -1,0 +1,14 @@
+{
+  "name": "gbp-grid",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "wrangler dev --local --local-upstream localhost",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0",
+    "wrangler": "4.166.0"
+  }
+}

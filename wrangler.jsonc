@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gbp-grid",
+  // build.mjs bundles src/ (client files as text) into dist/worker.js
+  "main": "dist/worker.js",
+  "build": { "command": "node build.mjs", "watch_dir": "src" },
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "gbp.exoreach.dev", "custom_domain": true }],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["17 6 * * *"] },
+  "vars": {
+    "ACCESS_TEAM": "orange-dawn-68e3.cloudflareaccess.com",
+    "ACCESS_AUD": "ab4cdae4904ca65fb85e93db9413a8c126b9ab6e62d02c1b1d22fb6fcb252a61",
+    "PUBLIC_ORIGIN": "https://gbp.exoreach.dev",
+    "MONTHLY_CAP_USD": "10"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "gbp-grid", "database_id": "72b7926b-fc09-44e2-a093-e1c929a59f3f", "migrations_dir": "migrations" }
+  ]
+  // Secrets (never in this file): DFS_LOGIN, DFS_PASSWORD, POSTBACK_KEY
+  // Local dev only: put DEV_EMAIL=you@example.com in .dev.vars
+}
