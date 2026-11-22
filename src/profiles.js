@@ -98,17 +98,39 @@ export async function lookup(env, ids, dfsAuth) {
   return { profile: fromLookup(item), cost: Number(task.cost) || 0 };
 }
 
-export async function listProfiles(env) {
-  return (
+// days > 0: baseline is the latest snapshot at least `days` old (else the earliest one).
+// days = 0: baseline is the first snapshot ever taken (since tracking started).
+export async function listProfiles(env, days = 30) {
+  const cutoff = `-${Math.max(0, Math.min(365, Number(days) || 0))} days`;
+  const profiles = (
     await env.DB.prepare(
       `SELECT p.*,
-         (SELECT reviews FROM profile_snapshots s WHERE s.profile_id = p.id AND s.day <= date('now', '-28 days') ORDER BY day DESC LIMIT 1) AS reviews_prev,
          (SELECT MIN(day) FROM profile_snapshots s WHERE s.profile_id = p.id) AS first_day,
          (SELECT ROUND(SUM(cost), 4) FROM profile_snapshots s WHERE s.profile_id = p.id) AS total_cost,
          EXISTS (SELECT 1 FROM locations l WHERE (l.place_id IS NOT NULL AND l.place_id = p.place_id) OR (l.cid IS NOT NULL AND l.cid = p.cid)) AS yours
        FROM profiles p ORDER BY p.grp, p.name`,
     ).all()
   ).results;
+  const base = (
+    await env.DB.prepare(
+      `SELECT profile_id, day, rating, reviews, photos FROM (
+         SELECT s.*, ROW_NUMBER() OVER (
+           PARTITION BY profile_id
+           ORDER BY CASE WHEN ?1 = '-0 days' THEN 1 WHEN day <= date('now', ?1) THEN 0 ELSE 1 END,
+                    CASE WHEN ?1 != '-0 days' AND day <= date('now', ?1) THEN day END DESC,
+                    day ASC) AS rn
+         FROM profile_snapshots s) WHERE rn = 1`,
+    )
+      .bind(cutoff)
+      .all()
+  ).results;
+  const byId = new Map(base.map((b) => [b.profile_id, b]));
+  return profiles.map((p) => {
+    const b = byId.get(p.id);
+    return b && b.day < new Date().toISOString().slice(0, 10)
+      ? { ...p, base_day: b.day, base_rating: b.rating, base_reviews: b.reviews, base_photos: b.photos }
+      : { ...p, base_day: null };
+  });
 }
 
 export async function suggestions(env) {

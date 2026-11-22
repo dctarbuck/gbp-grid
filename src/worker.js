@@ -612,7 +612,7 @@ const wrap = async (fn) => {
 };
 
 const routes = [
-  ['GET', /^\/api\/profiles$/, async (c) => json({ profiles: await listProfiles(c.env), suggestions: await suggestions(c.env), live: hasDfs(c.env) })],
+  ['GET', /^\/api\/profiles$/, async (c) => json({ profiles: await listProfiles(c.env, c.query.get('days') ?? 30), suggestions: await suggestions(c.env), live: hasDfs(c.env) })],
   ['POST', /^\/api\/profiles$/, (c) => wrap(async () => json(await addProfile(c.env, c.body, profileDeps(c.env)), 201))],
   ['POST', /^\/api\/profiles\/([\w-]+)\/refresh$/, (c, id) => wrap(async () => { need(hasDfs(c.env), 'DataForSEO is not set up.'); return json(await refreshProfile(c.env, id, profileDeps(c.env))); })],
   ['PATCH', /^\/api\/profiles\/([\w-]+)$/, (c, id) => wrap(async () => { await updateProfile(c.env, id, c.body); return json({ ok: true }); })],
@@ -708,7 +708,7 @@ export default {
         const match = method === m && path.match(re);
         if (!match) continue;
         const body = ['POST', 'PUT', 'PATCH'].includes(method) ? await req.json().catch(() => ({})) : null;
-        return await handler({ env, email, body: body || {}, origin: url.origin }, ...match.slice(1));
+        return await handler({ env, email, body: body || {}, origin: url.origin, query: url.searchParams }, ...match.slice(1));
       }
       return json({ error: 'Not found' }, 404);
     } catch (err) {

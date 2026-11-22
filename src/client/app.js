@@ -502,7 +502,8 @@
     return node;
   }
 
-  const stat = (label, value, delta) => el('div', { class: 'stats__item' }, el('dt', { class: 'stats__label' }, label), el('dd', { class: 'stats__value' }, value, delta && el('span', { class: 'stats__delta' }, delta)));
+  const deltaClass = (d) => (typeof d === 'string' && d.startsWith('▲') ? ' stats__delta--up' : typeof d === 'string' && d.startsWith('▼') ? ' stats__delta--down' : '');
+  const stat = (label, value, delta) => el('div', { class: 'stats__item' }, el('dt', { class: 'stats__label' }, label), el('dd', { class: 'stats__value' }, value, delta && el('span', { class: `stats__delta${deltaClass(delta)}` }, delta)));
 
   function leaderTable(a) {
     const rows = [];
@@ -1052,10 +1053,37 @@
 
   const reviewsLabel = (p) => (p.reviews != null ? p.reviews : p.rating == null && p.updated_at ? 0 : null);
 
+  let profilePeriod = 30;
+  const diff = (now, before) => (now != null && before != null ? +(now - before).toFixed(2) : null);
+  const arrow = (v, digits = 0) =>
+    v == null ? null : v === 0
+      ? el('span', { class: 'delta delta--same', title: 'No change' }, '=')
+      : el('span', { class: `delta delta--${v > 0 ? 'up' : 'down'}`, title: `${v > 0 ? 'Up' : 'Down'} ${Math.abs(v).toFixed(digits)}` }, `${v > 0 ? '▲' : '▼'}${Math.abs(v).toFixed(digits)}`);
+
+  function baselineNote(list) {
+    const days = list.map((p) => p.base_day).filter(Boolean).sort();
+    if (!days.length) return el('span', { class: 'meta' }, 'Arrows appear after a profile has been tracked for at least a day.');
+    const want = profilePeriod ? new Date(Date.now() - profilePeriod * 864e5).toISOString().slice(0, 10) : null;
+    const short = want && days[days.length - 1] > want;
+    return el('span', { class: 'meta' }, short
+      ? `Not enough history yet for the full period: comparing with ${fmtDay(days[0])}${days[0] !== days[days.length - 1] ? `–${fmtDay(days[days.length - 1])}` : ''}.`
+      : `Comparing with ${fmtDay(days[0])}${days[0] !== days[days.length - 1] ? ` to ${fmtDay(days[days.length - 1])}` : ''}.`);
+  }
+
   async function viewProfiles() {
     updateHeader(null);
-    const d = await api('/profiles');
-    const profiles = d.profiles.map((p) => ({ ...p, reviewsN: reviewsLabel(p), gain: p.reviews != null && p.reviews_prev != null ? p.reviews - p.reviews_prev : null }));
+    const d = await api(`/profiles?days=${profilePeriod}`);
+    const profiles = d.profiles.map((p) => {
+      const reviewsN = reviewsLabel(p);
+      const baseReviews = p.base_day ? p.base_reviews ?? (p.base_rating == null ? 0 : null) : null;
+      return {
+        ...p,
+        reviewsN,
+        dRating: p.base_day ? diff(p.rating, p.base_rating) : null,
+        gain: p.base_day ? diff(reviewsN, baseReviews) : null,
+        dPhotos: p.base_day ? diff(p.photos, p.base_photos) : null,
+      };
+    });
     const groups = [...new Set(profiles.map((p) => p.grp))].sort();
     let filter = 'all';
     let query = '';
@@ -1067,7 +1095,7 @@
       ['category', 'Primary category', 'text'],
       ['rating', 'Rating', 'num'],
       ['reviewsN', 'Reviews', 'num'],
-      ['gain', 'New (30 days)', 'num'],
+      ['gain', 'Review growth', 'num'],
       ['photos', 'Photos', 'num'],
       ['claimed', 'Claimed', 'flag'],
       ['has_hours', 'Hours', 'flag'],
@@ -1098,13 +1126,19 @@
         const v = list.map((p) => p[k]).filter((n) => n != null);
         return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
       };
+      // Group change: average of each profile's own change, so new joiners don't skew it.
+      const avgChange = (list, k, digits) => {
+        const v = avg(list, k);
+        return v == null ? null : v === 0 ? '(no change)' : `${v > 0 ? '▲' : '▼'} ${Math.abs(v).toFixed(digits)} each`;
+      };
       const share = (list, k) => `${pct(list.filter((p) => p[k] === 1 || (k === 'website' && p.website)).length, list.length)}%`;
       summaryBox.replaceChildren(el('div', { class: 'grid-2' }, [...by.entries()].map(([g, list]) =>
         el('div', { class: 'stats__item' },
           el('h3', { class: 'section__title' }, `${g} · ${list.length}`),
           el('dl', { class: 'stats' },
-            stat('Avg rating', avg(list, 'rating') == null ? '–' : `${avg(list, 'rating').toFixed(1)}★`),
-            stat('Avg reviews', avg(list, 'reviewsN') == null ? '–' : Math.round(avg(list, 'reviewsN'))),
+            stat('Avg rating', avg(list, 'rating') == null ? '–' : `${avg(list, 'rating').toFixed(1)}★`, avgChange(list, 'dRating', 2)),
+            stat('Avg reviews', avg(list, 'reviewsN') == null ? '–' : Math.round(avg(list, 'reviewsN')), avgChange(list, 'gain', 1)),
+            stat('Avg photos', avg(list, 'photos') == null ? '–' : Math.round(avg(list, 'photos')), avgChange(list, 'dPhotos', 1)),
             stat('Claimed', share(list, 'claimed')),
             stat('Has hours', share(list, 'has_hours')))))));
     }
@@ -1146,10 +1180,10 @@
             p.address ? el('span', { class: 'step__summary' }, p.address) : null),
           el('td', { class: 'table__cell' }, grp),
           td(p.category),
-          num(p, 'rating', p.rating != null ? `${p.rating}★` : p.reviewsN === 0 ? 'None' : null),
-          num(p, 'reviewsN', p.reviewsN === 0 ? 'None' : p.reviewsN),
-          num(p, 'gain', p.gain == null ? null : p.gain > 0 ? `+${p.gain}` : String(p.gain)),
-          num(p, 'photos', p.photos),
+          num(p, 'rating', [p.rating != null ? `${p.rating}★` : p.reviewsN === 0 ? 'None' : '–', ' ', arrow(p.dRating, 1)]),
+          num(p, 'reviewsN', [p.reviewsN === 0 ? 'None' : p.reviewsN ?? '–', ' ', arrow(p.gain)]),
+          num(p, 'gain', p.gain == null ? (p.base_day ? null : el('span', { class: 'step__summary', title: 'Needs a second snapshot' }, 'New')) : p.gain > 0 ? `+${p.gain}` : String(p.gain)),
+          num(p, 'photos', [p.photos ?? '–', ' ', arrow(p.dPhotos)]),
           flag(p.claimed),
           flag(p.has_hours),
           flag(p.website ? 1 : p.updated_at ? 0 : null),
@@ -1242,7 +1276,12 @@
     render(
       el('section', { class: 'section', 'aria-labelledby': 'prof-title' },
         el('div', { class: 'section__head' }, el('h1', { class: 'page-title', id: 'prof-title' }, 'Profile comparison'), refreshAll),
-        el('p', { class: 'section__lead' }, 'Every Google profile you track, side by side. Tracked profiles update for free whenever a scan finds them. The best value in each column is highlighted.'),
+        el('p', { class: 'section__lead' }, 'Every Google profile you track, side by side. Tracked profiles update for free whenever a scan finds them. The best value in each column is highlighted. Arrows show the change over the period you pick.'),
+        el('div', { class: 'toolbar' },
+          el('div', { class: 'tabs', role: 'group', 'aria-label': 'Compare with' },
+            [[30, 'vs 30 days ago'], [90, 'vs 90 days ago'], [0, 'Since tracking started']].map(([n, label]) =>
+              el('button', { class: `tabs__link${profilePeriod === n ? ' tabs__link--active' : ''}`, type: 'button', 'aria-pressed': String(profilePeriod === n), onclick: () => { profilePeriod = n; route(); } }, label))),
+          baselineNote(profiles)),
         groupList,
         el('div', { class: 'toolbar' }, chips, el('div', { class: 'toolbar__search' }, search)),
         tableBox),
