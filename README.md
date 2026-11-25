@@ -38,15 +38,12 @@ npm run dev
 `.dev.vars` needs `DEV_EMAIL=you@example.com`. The login bypass only works on localhost.
 
 ## Deploy
-```bash
-npx wrangler d1 migrations apply gbp-grid --remote
-```
+Cloudflare Workers Builds deploys every push to `main` (it runs `npx wrangler deploy`, which runs `node build.mjs` first).
 
+Database changes are not automatic. Migrations `0002`–`0004` were applied to production by hand, so run new ones by hand too:
 ```bash
-npm run deploy
+npx wrangler d1 execute gbp-grid --remote --file=migrations/<new-file>.sql
 ```
-
-Migration `0002_insights.sql` has already been applied to production by hand. Mark it applied before using `migrations apply`, or skip that step.
 
 ## Layout
 - `src/worker.js`: API, postbacks, schedules, security headers.
