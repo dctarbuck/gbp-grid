@@ -392,3 +392,15 @@ tbody tr:hover { background: var(--surface-2); }
   .pack__notes:empty::before { content: none; }
   .pack__notes { border-style: solid; }
 }
+
+/* ---------- Find on Google ---------- */
+.places-box { padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: var(--radius-sm); background: var(--accent-soft); }
+.places { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.places:empty { display: none; }
+.places__pick { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.places__pick:hover { border-color: var(--accent); }
+.places__title { font-weight: 650; }
+.places__meta { grid-column: 1; font-size: 13px; color: var(--muted); }
+.places__use { grid-column: 2; grid-row: 1 / span 2; color: var(--accent); font-weight: 650; font-size: 14px; white-space: nowrap; }
+.places-box > legend { float: left; width: 100%; padding: 0; margin-bottom: 10px; font-weight: 700; }
+.places-box > legend + * { clear: both; }

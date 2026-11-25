@@ -127,3 +127,10 @@ CREATE TABLE IF NOT EXISTS profile_snapshots (
   source TEXT,
   PRIMARY KEY (profile_id, day)
 );
+
+CREATE TABLE IF NOT EXISTS lookups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query TEXT NOT NULL,
+  cost REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

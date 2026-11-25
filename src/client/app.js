@@ -157,6 +157,10 @@
     const findBtn = el('button', { class: 'button button--ghost finder__button', type: 'button' }, 'Find');
     const mapNode = el('div', { class: 'map map--small', role: 'application', 'aria-label': 'Click to set the business pin' });
     const error = el('p', { class: 'form__error', role: 'alert' });
+    const gQuery = input({ name: 'gbp-search', type: 'search', autocomplete: 'off', enterkeyhint: 'search', value: initial?.name || '' });
+    const gBtn = el('button', { class: 'button finder__button', type: 'button' }, 'Search Google');
+    const gStatus = el('p', { class: 'field__hint', role: 'status' });
+    const gList = el('ul', { class: 'places' });
     let marker;
     let map;
 
@@ -194,6 +198,64 @@
         findBtn.disabled = false;
       }
     }
+    // Find on Google: pick the real listing, then fill in its IDs and pin.
+    const linked = () => {
+      const has = placeId.value.trim() || cid.value.trim();
+      gStatus.textContent = has ? 'Linked to a Google profile. Scans will match it exactly.' : 'Not linked yet. Scans will match by name only, which can miss.';
+    };
+    const usePlace = (r) => {
+      placeId.value = r.place_id || '';
+      cid.value = r.cid || '';
+      if (!name.value.trim()) name.value = r.title;
+      if (Number.isFinite(r.lat) && Number.isFinite(r.lng) && map) setPin(r.lat, r.lng, 17);
+      gList.replaceChildren();
+      linked();
+      gStatus.textContent = `Linked to "${r.title}". Check the pin, then save.`;
+    };
+    async function searchGoogle() {
+      const q = gQuery.value.trim();
+      if (q.length < 3) return (gStatus.textContent = 'Type the group name and town, e.g. "Slimming World Haxby".');
+      gBtn.disabled = true;
+      gStatus.textContent = 'Searching…';
+      try {
+        const d = await api('/places/find', { method: 'POST', body: { q, lat: lat.value, lng: lng.value } });
+        gList.replaceChildren(...d.results.map((r) =>
+          el('li', { class: 'places__item' },
+            el('button', { class: 'places__pick', type: 'button', onclick: () => usePlace(r) },
+              el('span', { class: 'places__title' }, r.title),
+              el('span', { class: 'places__meta' }, [r.address, r.category, r.reviews != null ? `${r.rating ?? '–'}★ · ${r.reviews} reviews` : 'No reviews'].filter(Boolean).join(' · ')),
+              el('span', { class: 'places__use' }, 'Use this')))));
+        gStatus.textContent = d.results.length
+          ? `Pick the right one${d.cost ? ` (search cost ${money(d.cost)})` : ''}.`
+          : d.live ? 'No match. Try fewer words, or add the town.' : 'No match in past scans. Live search needs DataForSEO.';
+        if (d.warning) gStatus.textContent = d.warning;
+        if (d.cost) config.spent = (config.spent || 0) + d.cost;
+      } catch (err) {
+        gStatus.textContent = err.message;
+      } finally {
+        gBtn.disabled = false;
+      }
+    }
+    gBtn.addEventListener('click', searchGoogle);
+    gQuery.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        searchGoogle();
+      }
+    });
+    // Accept a pasted Google Maps link in the ID fields.
+    const readLink = () => {
+      const v = placeId.value.trim();
+      let m;
+      if ((m = v.match(/(ChIJ[\w-]{10,})/))) placeId.value = m[1];
+      else if ((m = v.match(/[?&]cid=(\d{5,30})/))) [placeId.value, cid.value] = ['', m[1]];
+      else if ((m = v.match(/0x[0-9a-f]+:0x([0-9a-f]+)/i))) [placeId.value, cid.value] = ['', BigInt(`0x${m[1]}`).toString()];
+      linked();
+    };
+    placeId.addEventListener('change', readLink);
+    cid.addEventListener('change', linked);
+    linked();
+
     findBtn.addEventListener('click', locate);
     find.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
@@ -203,12 +265,19 @@
     });
 
     const form = el('form', { class: 'form', novalidate: true },
+      el('fieldset', { class: 'fieldset places-box' },
+        el('legend', { class: 'field__label' }, 'Find the Google profile'),
+        el('div', { class: 'finder' },
+          field('Group name and town', gQuery, 'Pick the right listing. It fills in the IDs and the pin for you.'),
+          gBtn),
+        gStatus,
+        gList),
       el('div', { class: 'form__row' },
-        field('Business name', name, 'Exactly as it shows on Google.'),
-        field('Place ID (best)', placeId, 'Exact match. Found automatically after the first match by name.'),
-        field('CID (optional)', cid, 'The number after cid= in a Maps link.')),
+        field('Business name', name, 'Your label for this location.'),
+        field('Place ID', placeId, 'Filled in by the search above. You can also paste a Google Maps link.'),
+        field('CID (optional)', cid, 'Filled in by the search above.')),
       el('div', { class: 'finder' },
-        field('Find the business on the map', find, 'Postcode, address, or paste a Google Maps link. Then click the exact spot to fine-tune.'),
+        field('Or find a spot on the map', find, 'Postcode, address, or a Google Maps link. Click the map to fine-tune.'),
         findBtn),
       el('div', { class: 'form__row' }, field('Latitude', lat), field('Longitude', lng)),
       mapNode,

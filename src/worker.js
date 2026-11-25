@@ -348,7 +348,8 @@ async function monthSpend(env) {
   const r = await one(
     env,
     `SELECT (SELECT COALESCE(SUM(cost), 0) FROM scans WHERE created_at >= strftime('%Y-%m-01', 'now'))
-          + (SELECT COALESCE(SUM(cost), 0) FROM profile_snapshots WHERE day >= strftime('%Y-%m-01', 'now')) AS spent`,
+          + (SELECT COALESCE(SUM(cost), 0) FROM profile_snapshots WHERE day >= strftime('%Y-%m-01', 'now'))
+          + (SELECT COALESCE(SUM(cost), 0) FROM lookups WHERE created_at >= strftime('%Y-%m-01', 'now')) AS spent`,
   );
   return r.spent;
 }
@@ -474,6 +475,65 @@ async function loadScan(env, scan, { withAnalysis }) {
     analysis,
     previous,
   };
+}
+
+/* ---------- Find on Google: match a location to its exact Google profile ---------- */
+
+const placeResult = (l) => ({
+  title: l.title,
+  address: l.address || null,
+  category: l.category || null,
+  rating: l.rating ?? null,
+  reviews: l.reviews ?? null,
+  place_id: l.place_id || null,
+  cid: l.cid ? String(l.cid) : null,
+  lat: l.lat ?? null,
+  lng: l.lng ?? null,
+});
+
+async function findPlaces(env, b) {
+  const q = text(b.q, 120);
+  need(q.length >= 3, 'Type at least 3 characters, e.g. the group name and town.');
+  const lat = Number(b.lat);
+  const lng = Number(b.lng);
+  const near = Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+
+  // Free first: businesses already seen in scans.
+  const words = q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2).slice(0, 5);
+  const known = words.length
+    ? await all(
+        env,
+        `SELECT title, address, category, rating, reviews, place_id, cid, lat, lng FROM listings
+         WHERE place_id IS NOT NULL AND ${words.map(() => 'lower(title) LIKE ?').join(' AND ')}
+         GROUP BY place_id ORDER BY MAX(rowid) DESC LIMIT 10`,
+        ...words.map((w) => `%${w}%`),
+      )
+    : [];
+
+  let google = [];
+  let cost = 0;
+  let warning = null;
+  if (hasDfs(env)) try {
+    await checkCap(env, 0.01);
+    const res = await fetch(`${DFS}/live/advanced`, {
+      method: 'POST',
+      headers: { authorization: dfsAuth(env), 'content-type': 'application/json' },
+      body: JSON.stringify([{ keyword: q, language_code: 'en', depth: 20, ...(near ? { location_coordinate: `${lat},${lng},12z` } : { location_name: 'United Kingdom' }) }]),
+    });
+    const data = await res.json().catch(() => ({}));
+    const task = data.tasks?.[0];
+    need(task && (task.status_code === 20000 || task.status_code === 40102), `DataForSEO: ${task?.status_message || data.status_message || res.status}`, 502);
+    cost = Number(task.cost) || 0;
+    google = (task.result?.[0]?.items || []).filter((i) => i.type === 'maps_search').map(toListing);
+    await run(env, 'INSERT INTO lookups (query, cost) VALUES (?, ?)', q, cost);
+  } catch (err) {
+    if (!known.length) throw err instanceof HttpError ? err : new HttpError('Could not reach Google search. Try again in a minute.', 502);
+    warning = `${err instanceof HttpError ? err.message : 'Google search failed.'} Showing matches from past scans instead.`;
+  }
+
+  const seen = new Set();
+  const results = [...google, ...known].map(placeResult).filter((r) => r.place_id && !seen.has(r.place_id) && seen.add(r.place_id));
+  return json({ results: results.slice(0, 15), cost, live: hasDfs(env), warning });
 }
 
 /* ---------- Print pack: one group's wins, fixes and team context ---------- */
@@ -729,6 +789,7 @@ const routes = [
       return json({ ok: true });
     },
   ],
+  ['POST', /^\/api\/places\/find$/, (c) => findPlaces(c.env, c.body)],
   ['GET', /^\/api\/locations\/([\w-]+)\/pack$/, (c, id) => packData(c.env, id, c.query.get('scan'))],
   ['PUT', /^\/api\/locations\/([\w-]+)\/checklist\/([\w-]+)$/, (c, id, item) => setChecklist(c.env, id, item, c.body)],
   ['POST', /^\/api\/scans$/, async (c) => json({ id: await startScan(c.env, c.body, c.email, c.origin) }, 201)],
