@@ -343,7 +343,7 @@
 
   /* ---------- Location shell + tabs ---------- */
 
-  const TABS = [['plan', 'Action plan'], ['scan', 'Run a scan'], ['progress', 'Progress'], ['checklist', 'Checklist'], ['settings', 'Settings']];
+  const TABS = [['plan', 'Action plan'], ['scan', 'Run a scan'], ['progress', 'Progress'], ['checklist', 'Checklist'], ['pack', 'Print pack'], ['settings', 'Settings']];
   const CHECKLIST_TOTAL = () => CHECKLIST.reduce((n, [, items]) => n + items.length, 0);
 
   async function viewLocation(id, tab, extra) {
@@ -370,7 +370,7 @@
         : el('p', { class: 'notice notice--info' }, 'No scans yet. Run your first scan to get a map and an action plan.'),
       el('nav', { class: 'tabs', 'aria-label': 'Location sections' }, TABS.map(([key, label]) =>
         el('a', { class: `tabs__link${key === tab ? ' tabs__link--active' : ''}`, href: `#/loc/${id}/${key}`, 'aria-current': key === tab ? 'page' : null }, label))));
-    const views = { plan: tabPlan, scan: tabScan, progress: tabProgress, checklist: tabChecklist, settings: tabSettings };
+    const views = { plan: tabPlan, scan: tabScan, progress: tabProgress, checklist: tabChecklist, pack: tabPack, settings: tabSettings };
     await (views[tab] || tabPlan)(d, header, extra);
   }
 
@@ -438,6 +438,181 @@
       section('You vs the leaders', el('p', { class: 'section__lead' }, 'The businesses most often in the top 3 on your grid.'), leaderTable(a)),
       section('How far your ranking reaches', reachView(a)),
     );
+  }
+
+  /* ---------- Print pack (a hand-out for the group's consultant) ---------- */
+
+  // One-off fixes in plain words, pointing to the SW guide rather than repeating it.
+  const PACK_FIXES = {
+    claim: ['Claim your profile', 'Google shows it as unclaimed. Until you own it, you cannot change anything.', 'New profile guide, steps 1–10'],
+    'primary-category': ['Set your main category to "Weight-loss service"', 'It is the biggest signal you control. It tells Google what you do.', 'Existing profile guide, step 2'],
+    'extra-categories': ['Add "Health consultant" as a second category', 'The groups beating you use extra categories. Only add ones that are true.', 'Existing profile guide, step 2'],
+    hours: ['Add your group times as opening hours', 'Google favours places that are "open" when someone searches.', 'Existing profile guide, step 9'],
+    website: ['Link your SW group page', 'A matching web page backs up your location and times.', 'Existing profile guide, step 5'],
+    photos: ['Add more real photos', 'The groups ahead of you have far more. Photos help people pick you.', 'Existing profile guide, photos section'],
+    description: ['Write a fuller description', 'Yours is short. Say "weight loss group in [area]", your day, time and venue.', 'Existing profile guide, step 3'],
+  };
+
+  function campaignDates(now = new Date()) {
+    const y = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    const d = (m, day) => new Date(Date.UTC(m > 11 ? y + 1 : y, m % 12, day));
+    return { start: d(11, 20), newYear: d(12, 4), peakEnd: d(12, 25) };
+  }
+  const addDays = (date, n) => new Date(date.getTime() + n * 864e5);
+  const shortDay = (date) => date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const firstName = (name) => (String(name).match(/\bwith\s+([A-Z][a-z]+)/) || [])[1];
+
+  function packWins(p) {
+    const wins = [];
+    const own = p.own;
+    const self = p.scan?.analysis?.self;
+    const t = p.team;
+    const swCount = p.york.team.count;
+    const reviews = own ? own.reviews ?? 0 : self?.reviews ?? 0;
+    const rating = own?.rating ?? self?.rating;
+    if (rating >= 4.5 && reviews > 0) wins.push([`${rating.toFixed(1)}★`, `Your Google rating from ${reviews} review${reviews === 1 ? '' : 's'}. Members clearly rate you.`]);
+    if (own?.reviewRank === 1 && reviews > 0) wins.push(['#1', `Most Google reviews of the ${swCount} York SW groups we track.`]);
+    if (t?.selfTop3) wins.push([`${t.selfTop3}/${t.points}`, `Spots where you are in Google's top 3 for "${p.scan.scan.keyword}".`]);
+    if (t?.selfFirst) wins.push(['#1', `You are first on Google at ${t.selfFirst} spot${t.selfFirst === 1 ? '' : 's'} around you.`]);
+    if (own?.photos && own.photoRank <= 3) wins.push([own.photoRank === 1 ? '#1' : `Top ${own.photoRank}`, `For photos among ${swCount} York SW groups (${own.photos} photos).`]);
+    const radius = p.scan?.analysis?.reach?.strongRadius;
+    if (radius >= 1) wins.push([`${radius} km`, 'You are strong on Google this far from your venue.']);
+    if (t?.teamTop3 && t.groups > 1) wins.push([`${pct(t.teamTop3, t.points)}%`, `Of spots near you show a SW group in Google's top 3. You are part of that.`]);
+    if (!wins.length) wins.push(self ? ['Live', 'Your profile shows up in Google searches near you. That is the base everything builds on.'] : ['Started', 'Your profile is live on Google. Every step from here adds to it.']);
+    return wins.slice(0, 4);
+  }
+
+  function packFixes(p) {
+    const done = new Set(p.plan.filter((c) => c.done).map((c) => c.item.slice(5)));
+    const ids = (p.scan?.analysis?.recommendations || []).map((r) => r.id).filter((id) => PACK_FIXES[id] && !done.has(id));
+    const own = p.own;
+    if (own) {
+      if (own.has_hours === 0) ids.push('hours');
+      if (!own.website) ids.push('website');
+      if (own.photos != null && own.photos < 10) ids.push('photos');
+      if (own.desc_len != null && own.desc_len < 250) ids.push('description');
+      if (own.claimed === 0) ids.push('claim');
+    }
+    return [...new Set(ids)].map((id) => PACK_FIXES[id]);
+  }
+
+  function reviewGoal(p, weeks) {
+    const mine = p.own ? p.own.reviews ?? 0 : p.scan?.analysis?.self?.reviews ?? 0;
+    const leaders = (p.scan?.analysis?.competitors || []).filter((c) => c.top3 > 0).map((c) => c.reviews ?? 0);
+    const target = Math.max(10, ...leaders);
+    const perWeek = Math.min(3, Math.max(1, Math.ceil((target - mine) / Math.max(1, weeks))));
+    return { mine, perWeek, by: mine + perWeek * weeks };
+  }
+
+  async function tabPack(d, header, scanId) {
+    const loc = d.location;
+    const p = await api(`/locations/${loc.id}/pack${scanId ? `?scan=${encodeURIComponent(scanId)}` : ''}`);
+    const now = new Date();
+    const c = campaignDates(now);
+    const weeksToStart = Math.max(1, Math.round((c.start - now) / (7 * 864e5)));
+    const goal = reviewGoal(p, weeksToStart);
+    const fixes = packFixes(p);
+    const who = firstName(loc.name);
+    const york = p.york.team;
+    const chosen = p.scan?.scan;
+
+    const picker = p.scans.length > 1 && select({ name: 'pack-scan', id: 'pack-scan' },
+      p.scans.map((s) => [s.id, `"${s.keyword}"${s.mode === 'demo' ? ' (demo)' : ''} · ${fmtDay(s.created_at)}`, s.id === chosen?.id]));
+    picker && picker.addEventListener('change', () => (location.hash = `#/loc/${loc.id}/pack/${picker.value}`));
+
+    const box = (label) => el('span', { class: 'pack__box', role: 'img', 'aria-label': label });
+    const block = (title, ...kids) => {
+      const id = `p${++uid}`;
+      return el('section', { class: `pack__block${title.startsWith('New Year') ? ' pack__block--break' : ''}`, 'aria-labelledby': id }, el('h2', { class: 'pack__title', id }, title), ...kids);
+    };
+
+    const phases = [
+      [now, addDays(c.start, -14), 'Get ready', ['Finish your fix list above.', 'Set Christmas and New Year hours, including any moved groups.', 'Start the weekly review habit now. Reviews take weeks to count.']],
+      [addDays(c.start, -13), addDays(c.start, -1), 'Build up', ['Post your January group dates and any offer.', 'Add fresh photos of your group in the run-up to Christmas.', 'Ask members who did well in December for a review.']],
+      [c.start, c.newYear, 'Doors open', ['Post a "new year, fresh start" update with your first January group.', 'Reply to every review and message the same day.', 'Check your hours each week while dates move.']],
+      [addDays(c.newYear, 1), c.peakEnd, 'Peak joining', ['Post an update every week.', 'Share a member story, with their permission.', 'Keep asking long-standing members for reviews.']],
+    ].filter(([, end]) => end >= addDays(now, -1));
+
+    const routine = [
+      ['Group day (10 minutes)', [
+        `Ask ${goal.perWeek} member${goal.perWeek === 1 ? '' : 's'} face to face for a review, right after a good weigh-in.`,
+        'Reply to every new review. Mention the group and area in your own words.',
+        'Take one real photo (room, celebration, team) and add it. Get permission first.',
+      ]],
+      ['Mid-week (10 minutes)', [
+        'Post one Google update: group news, a milestone, or your times.',
+        'Send your review link to anyone who said they would leave one.',
+        'Check your hours and details are still right.',
+      ]],
+    ];
+
+    const pack = el('article', { class: 'pack', 'aria-labelledby': 'pack-title' },
+      el('header', { class: 'pack__head' },
+        el('p', { class: 'pack__kicker' }, 'Google profile action pack'),
+        el('h1', { class: 'pack__name', id: 'pack-title' }, loc.name),
+        el('p', { class: 'pack__meta' }, `Prepared ${now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+          chosen && ` · Based on a ${chosen.mode === 'demo' ? 'DEMO' : 'live'} Google check for "${chosen.keyword}" on ${fmtDay(chosen.created_at)}`)),
+
+      block(who ? `${who}, here is what is going well` : 'What is going well',
+        el('ul', { class: 'pack__wins' }, packWins(p).map(([big, text]) =>
+          el('li', { class: 'pack__win' }, el('span', { class: 'pack__win-value' }, big), el('span', { class: 'pack__win-text' }, text))))),
+
+      block('Fix once',
+        fixes.length
+          ? [el('p', { class: 'pack__lead' }, 'Do these one time. Your SW guide shows you how, so each one says where to look.'),
+             el('ul', { class: 'pack__list' }, fixes.map(([title, why, ref]) =>
+               el('li', { class: 'pack__item' }, box('Tick when done'),
+                 el('span', null, el('strong', null, title), el('span', { class: 'pack__why' }, `${why} `), el('span', { class: 'pack__ref' }, `See: ${ref}`)))))]
+          : el('p', { class: 'pack__lead' }, p.own || p.scan?.analysis?.self
+            ? 'Nothing big to fix. Your profile basics are in good shape, so put your time into the weekly routine.'
+            : 'We have not checked this profile yet. Run a Google check, or add it on the Profiles page, to find fixes.')),
+
+      block('Your twice-a-week routine',
+        el('p', { class: 'pack__lead' },
+          `Little and often beats one big push. Google trusts a steady flow. Goal: ${goal.perWeek} new review${goal.perWeek === 1 ? '' : 's'} a week. `,
+          `That takes you from ${goal.mine} to about ${goal.by} by ${shortDay(c.start)}.`),
+        el('table', { class: 'pack__grid' },
+          el('caption', { class: 'visually-hidden' }, 'Four-week tick sheet'),
+          el('thead', null, el('tr', null, el('th', { scope: 'col' }, 'Task'), [1, 2, 3, 4].map((w) => el('th', { scope: 'col' }, `Wk ${w}`)))),
+          el('tbody', null, routine.flatMap(([when, tasks]) => [
+            el('tr', { class: 'pack__grid-group' }, el('th', { scope: 'rowgroup', colspan: 5 }, when)),
+            ...tasks.map((t) => el('tr', null, el('th', { scope: 'row' }, t), [1, 2, 3, 4].map((w) => el('td', null, box(`Week ${w}`))))),
+          ]))),
+        el('p', { class: 'pack__note' }, 'Never offer rewards for reviews, and never ask for set words. Honest, specific reviews work best.')),
+
+      block(`New Year push: starts ${shortDay(c.start)}`,
+        el('p', { class: 'pack__lead' }, 'The busiest joining weeks of the year. Google needs time to notice changes, so the work starts now.'),
+        el('ol', { class: 'pack__timeline' }, phases.map(([from, to, title, tasks]) =>
+          el('li', { class: 'pack__phase' },
+            el('p', { class: 'pack__phase-when' }, `${shortDay(from > now ? from : now)} – ${shortDay(to)}`),
+            el('h3', { class: 'pack__phase-title' }, title),
+            el('ul', { class: 'pack__phase-tasks' }, tasks.map((t) => el('li', null, t))))))),
+
+      block('Team York: a rising tide lifts all boats',
+        el('p', { class: 'pack__lead' },
+          'Every York group runs on its own day and time, so we are not rivals. When someone searches "Slimming World York", strong profiles make the whole brand look busy and trusted. They then pick the night that suits them.'),
+        el('dl', { class: 'pack__team' },
+          york.count > 0 && el('div', null, el('dt', null, 'York SW groups tracked'), el('dd', null, york.count)),
+          york.count > 0 && el('div', null, el('dt', null, 'Have Google reviews'), el('dd', null, `${york.withReviews} of ${york.count}`)),
+          york.count > 0 && el('div', null, el('dt', null, 'Team reviews in total'), el('dd', null, york.reviews)),
+          p.team?.groups > 1 && el('div', null, el('dt', null, 'Spots near you with SW in the top 3'), el('dd', null, `${pct(p.team.teamTop3, p.team.points)}%`))),
+        york.count > 1 && el('p', { class: 'pack__goal' },
+          `If every York group gets 2 reviews a week until ${shortDay(c.start)}, the team adds about ${york.count * 2 * weeksToStart} reviews. Your share helps everyone.`)),
+
+      block('Notes from today',
+        el('div', { class: 'pack__notes', contenteditable: 'true', role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Notes from today' })),
+
+      el('footer', { class: 'pack__foot' }, `Next check-up: ${addDays(now, 28).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}. We will re-run the Google check and compare.`));
+
+    render(header,
+      el('section', { class: 'section pack-controls', 'aria-label': 'Pack options' },
+        el('p', { class: 'section__lead pack-controls__lead' }, 'A hand-out for the group\'s consultant. Type notes into the pack, then print or save as PDF.'),
+        el('div', { class: 'form__actions' },
+          picker && el('div', { class: 'field' }, el('label', { class: 'visually-hidden', for: 'pack-scan' }, 'Google check to use'), picker),
+          el('button', { class: 'button', type: 'button', onclick: () => window.print() }, 'Print or save as PDF')),
+        !chosen && el('p', { class: 'notice notice--info' }, 'No scan yet, so the pack uses profile data only. Run a live scan for map stats.'),
+        chosen?.mode === 'demo' && el('p', { class: 'notice notice--warn' }, 'This uses a DEMO scan. Pick a live one before printing.')),
+      pack);
   }
 
   function stepCard(r, i, { loc, ctx, status, scanAt, open, onChange }) {

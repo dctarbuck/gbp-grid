@@ -476,6 +476,75 @@ async function loadScan(env, scan, { withAnalysis }) {
   };
 }
 
+/* ---------- Print pack: one group's wins, fixes and team context ---------- */
+
+const isTeam = (title) => /slimming world/i.test(title || '');
+const reviewsOf = (p) => p.reviews ?? 0; // no rating block on Google means no reviews yet
+
+async function packData(env, id, scanId) {
+  const location = await one(env, 'SELECT * FROM locations WHERE id = ?', id);
+  need(location, 'Location not found.', 404);
+  const scans = await all(
+    env,
+    `SELECT id, keyword, mode, size, spacing_km, created_at FROM scans WHERE location_id = ? AND status = 'done' ORDER BY created_at DESC`,
+    id,
+  );
+  // Default: the latest live scan for a non-brand search, as that is how new members find a group.
+  const live = scans.filter((s) => s.mode === 'live');
+  const scan = scans.find((s) => s.id === scanId) || live.find((s) => !isTeam(s.keyword)) || live[0] || scans[0] || null;
+
+  let scanView = null;
+  let team = null;
+  if (scan) {
+    const full = await one(env, 'SELECT * FROM scans WHERE id = ?', scan.id);
+    scanView = await loadScan(env, full, { withAnalysis: true });
+    const points = await all(env, "SELECT ranks, rank FROM points WHERE scan_id = ? AND status = 'done'", scan.id);
+    const titles = new Map((await all(env, 'SELECT key, title FROM listings WHERE scan_id = ?', scan.id)).map((l) => [l.key, l.title]));
+    const groups = new Set();
+    let teamTop3 = 0;
+    for (const p of points) {
+      const top = JSON.parse(p.ranks || '[]').slice(0, 3).map((k) => titles.get(k)).filter(isTeam);
+      top.forEach((t) => groups.add(t));
+      if (top.length) teamTop3 += 1;
+    }
+    team = {
+      points: points.length,
+      teamTop3,
+      selfTop3: points.filter((p) => p.rank != null && p.rank <= 3).length,
+      selfFirst: points.filter((p) => p.rank === 1).length,
+      groups: groups.size,
+    };
+  }
+
+  const profiles = await listProfiles(env, 30);
+  const own = profiles.find((p) => (location.place_id && p.place_id === location.place_id) || (location.cid && p.cid === location.cid)) || null;
+  const summarise = (list) => {
+    const rated = list.filter((p) => p.rating != null);
+    const tracked = list.filter((p) => p.base_day);
+    return {
+      count: list.length,
+      reviews: list.reduce((n, p) => n + reviewsOf(p), 0),
+      withReviews: list.filter((p) => reviewsOf(p) > 0).length,
+      avgRating: rated.length ? rated.reduce((n, p) => n + p.rating, 0) / rated.length : null,
+      gained: tracked.length ? tracked.reduce((n, p) => n + Math.max(0, reviewsOf(p) - (p.base_reviews ?? 0)), 0) : null,
+      since: tracked.length ? tracked.map((p) => p.base_day).sort()[0] : null,
+    };
+  };
+  const swProfiles = profiles.filter((p) => isTeam(p.name));
+  const rank = (field) => (own ? 1 + swProfiles.filter((p) => (p[field] ?? 0) > (own[field] ?? 0)).length : null);
+
+  const plan = await all(env, "SELECT item, done, note FROM checklist WHERE location_id = ? AND item LIKE 'plan-%'", id);
+  return json({
+    location: { id: location.id, name: location.name },
+    scans: scans.map((s) => ({ id: s.id, keyword: s.keyword, mode: s.mode, created_at: s.created_at })),
+    scan: scanView,
+    team,
+    own: own && { ...own, reviewRank: rank('reviews'), photoRank: rank('photos') },
+    york: { team: summarise(swProfiles), others: summarise(profiles.filter((p) => !isTeam(p.name))) },
+    plan,
+  });
+}
+
 async function getScan(env, id) {
   const scan = await one(env, 'SELECT * FROM scans WHERE id = ?', id);
   need(scan, 'Scan not found.', 404);
@@ -660,6 +729,7 @@ const routes = [
       return json({ ok: true });
     },
   ],
+  ['GET', /^\/api\/locations\/([\w-]+)\/pack$/, (c, id) => packData(c.env, id, c.query.get('scan'))],
   ['PUT', /^\/api\/locations\/([\w-]+)\/checklist\/([\w-]+)$/, (c, id, item) => setChecklist(c.env, id, item, c.body)],
   ['POST', /^\/api\/scans$/, async (c) => json({ id: await startScan(c.env, c.body, c.email, c.origin) }, 201)],
   ['GET', /^\/api\/scans\/([\w-]+)$/, (c, id) => getScan(c.env, id)],
